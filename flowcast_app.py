@@ -14,26 +14,26 @@ st.set_page_config(
 )
 
 # --- ESTILOS CSS ---
-st.markdown(
-    style
-    .main { background-color #f4f6f9; }
-    .stButtonbutton {
-        width 100%;
-        background-color #004B87;  Azul Petróleo 
-        color white;
-        border-radius 5px;
-        font-weight bold;
+st.markdown("""
+    <style>
+    .main { background-color: #f4f6f9; }
+    .stButton>button {
+        width: 100%;
+        background-color: #004B87; /* Azul Petróleo */
+        color: white;
+        border-radius: 5px;
+        font-weight: bold;
     }
     .metric-container {
-        background-color white;
-        padding 15px;
-        border-radius 8px;
-        border-left 5px solid #004B87;
-        box-shadow 0 2px 4px rgba(0,0,0,0.1);
-        text-align center;
+        background-color: white;
+        padding: 15px;
+        border-radius: 8px;
+        border-left: 5px solid #004B87;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        text-align: center;
     }
-    style
-    , unsafe_allow_html=True)
+    </style>
+    """, unsafe_allow_html=True)
 
 # --- FUNCIONES MATEMÁTICAS (BACKEND) ---
 
