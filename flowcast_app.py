@@ -5,15 +5,15 @@ import scipy.stats as stats
 import plotly.graph_objects as go
 import plotly.express as px
 
-# --- 1. CONFIGURACIÓN DE PÁGINA (CORREGIDO) ---
+# --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
     page_title="Reliarisk FlowCast",
-    page_icon="📉",  # CORREGIDO: Emoji entre comillas
+    page_icon="📉",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- 2. ESTILOS CSS (CORREGIDO) ---
+# --- 2. ESTILOS CSS ---
 st.markdown("""
     <style>
     .main { background-color: #f4f6f9; }
@@ -33,12 +33,12 @@ st.markdown("""
         text-align: center;
     }
     </style>
-    """, unsafe_allow_html=True) # CORREGIDO: Cierre correcto de comillas triples
+    """, unsafe_allow_html=True)
 
 # --- 3. FUNCIONES MATEMÁTICAS (BACKEND) ---
 
 def generate_samples(dist_type, params, n_iter):
-    """Generador de variables estocásticas vectorizado."""
+    """Generador de variables estocásticas vectorizado con nuevas distribuciones."""
     if dist_type == 'Normal':
         return np.random.normal(params['mean'], params['std'], n_iter)
     elif dist_type == 'Lognormal':
@@ -54,25 +54,44 @@ def generate_samples(dist_type, params, n_iter):
         return mn + (mx - mn) * np.random.beta(alpha, beta, n_iter)
     elif dist_type == 'Uniforme':
         return np.random.uniform(params['min'], params['max'], n_iter)
+    elif dist_type == 'Weibull':
+        # np.random.weibull genera una distribución con escala=1. Multiplicamos por params['scale']
+        # params['shape'] es el parámetro k (forma)
+        return params['scale'] * np.random.weibull(params['shape'], n_iter)
+    elif dist_type == 'Gamma':
+        # np.random.gamma toma shape (k) y scale (theta)
+        return np.random.gamma(params['shape'], params['scale'], n_iter)
     elif dist_type == 'Determinístico':
         return np.full(n_iter, params['value'])
     return np.zeros(n_iter)
 
 # --- ECUACIONES DE AFLUENCIA (MÓDULO I) ---
-def ipr_oil_darcy(k, h, Pr, Pwf, mu, Bo, re, rw, S):
-    numerator = k * h * (Pr - Pwf)
+def ipr_oil_darcy(k, h, delta_p, mu, Bo, re, rw, S):
+    """
+    Darcy modificado para recibir Delta P (Pr - Pwf) directamente.
+    """
+    numerator = k * h * delta_p
     denominator = 141.2 * Bo * mu * (np.log(re/rw) + S)
     q = numerator / denominator
     return np.maximum(q, 0)
 
-def ipr_oil_vogel(qmax, Pr, Pwf):
-    ratio = Pwf / Pr
+def ipr_oil_vogel(qmax, Pr_ref, delta_p):
+    """
+    Vogel usando Pr de referencia y Delta P estocástico.
+    Pwf calculado internamente como Pr - Delta P.
+    """
+    # Pwf no puede ser menor que 0
+    pwf = np.maximum(Pr_ref - delta_p, 0) 
+    ratio = pwf / Pr_ref
     q = qmax * (1 - 0.2 * ratio - 0.8 * (ratio**2))
     return np.maximum(q, 0)
 
-def ipr_gas_backpressure(C, Pr, Pwf, n):
-    term = (Pr**2 - Pwf**2)
-    term = np.maximum(term, 0)
+def ipr_gas_backpressure(C, Pr_ref, delta_p, n):
+    """
+    Backpressure usando Pr de referencia y Delta P estocástico.
+    """
+    pwf = np.maximum(Pr_ref - delta_p, 0)
+    term = (Pr_ref**2 - pwf**2)
     q = C * (term**n)
     return q
 
@@ -92,13 +111,14 @@ def arps_forecast(t_array, qi_vec, di_vec, b_vec):
     
     return np.where(is_hyp, q_hyp, q_exp)
 
-# --- HELPER PARA INPUTS ---
+# --- HELPER PARA INPUTS (CON NUEVAS DISTRIBUCIONES) ---
 def render_dist_input(label, key, default_mode, default_min, default_max):
-    dist = st.selectbox(f"Distribución {label}", 
-                       ['BetaPERT', 'Lognormal', 'Normal', 'Triangular', 'Determinístico'],
-                       key=f"d_{key}")
+    options = ['BetaPERT', 'Lognormal', 'Normal', 'Triangular', 'Weibull', 'Gamma', 'Determinístico']
+    dist = st.selectbox(f"Distribución {label}", options, key=f"d_{key}")
+    
     p = {}
     cols = st.columns(3)
+    
     if dist == 'BetaPERT':
         p['min'] = cols[0].number_input("Mín", value=float(default_min), key=f"mn_{key}")
         p['mode'] = cols[1].number_input("Moda", value=float(default_mode), key=f"md_{key}")
@@ -110,11 +130,19 @@ def render_dist_input(label, key, default_mode, default_min, default_max):
         p['min'] = cols[0].number_input("Mín", value=float(default_min), key=f"tm_{key}")
         p['mode'] = cols[1].number_input("Moda", value=float(default_mode), key=f"tmd_{key}")
         p['max'] = cols[2].number_input("Máx", value=float(default_max), key=f"tmx_{key}")
-    elif dist == 'Determinístico':
-        p['value'] = cols[0].number_input("Valor", value=float(default_mode), key=f"dt_{key}")
     elif dist == 'Lognormal':
         p['mean'] = cols[0].number_input("Media", value=float(default_mode), key=f"lm_{key}")
         p['std'] = cols[1].number_input("Std Dev", value=float((default_max-default_min)/4), key=f"ls_{key}")
+    elif dist == 'Weibull':
+        # Weibull requiere Forma (k) y Escala (lambda)
+        p['shape'] = cols[0].number_input("Forma (k)", value=1.5, min_value=0.1, key=f"ws_{key}")
+        p['scale'] = cols[1].number_input("Escala (λ)", value=float(default_mode), key=f"wsc_{key}")
+    elif dist == 'Gamma':
+        # Gamma requiere Forma (k/alpha) y Escala (theta)
+        p['shape'] = cols[0].number_input("Forma (k)", value=2.0, min_value=0.1, key=f"gs_{key}")
+        p['scale'] = cols[1].number_input("Escala (θ)", value=float(default_mode)/2, key=f"gsc_{key}")
+    elif dist == 'Determinístico':
+        p['value'] = cols[0].number_input("Valor", value=float(default_mode), key=f"dt_{key}")
         
     return {'dist': dist, 'params': p}
 
@@ -126,7 +154,6 @@ def main():
         try:
             st.image("mi-logo.png", use_container_width=True)
         except:
-            # CORREGIDO: Emoji dentro de comillas
             st.warning("⚠️ Logo no cargado") 
         
         st.title("Configuración Global")
@@ -136,13 +163,12 @@ def main():
     st.title("Reliarisk FlowCast")
     st.markdown("Plataforma Probabilística de Afluencia y Pronóstico de Producción")
 
-    # CORREGIDO: Emojis dentro de comillas en las Tabs
     tab1, tab2 = st.tabs(["🔹 Módulo I: Prod. Inicial (Afluencia)", "🔹 Módulo II: Pronóstico (Declinación)"])
 
     # --- MÓDULO I: AFLUENCIA ---
     with tab1:
         st.header("Módulo I: Cálculo de Producción Inicial ($q_i$)")
-        st.markdown("Este módulo calcula la capacidad de aporte del pozo (Afluencia) basándose en propiedades físicas.")
+        st.markdown("Cálculo basado en la capacidad de aporte del pozo (IPR).")
         
         col_m1_1, col_m1_2 = st.columns([1, 2])
         
@@ -156,11 +182,15 @@ def main():
             st.subheader("Variables Estocásticas")
             
             inputs_m1 = {}
+            
+            # --- LÓGICA DE PRESIÓN UNIFICADA (NUEVO) ---
+            # Solicitamos Delta P en lugar de Pr y Pwf por separado.
+            
             if fluid_type == "Aceite" and model_ipr == "Darcy (Flujo Radial)":
+                # Darcy solo necesita Delta P
+                inputs_m1['delta_p'] = render_dist_input("Drawdown (Pr - Pwf) [psi]", "dp_d", 500, 100, 1000)
                 inputs_m1['k'] = render_dist_input("Permeabilidad k (mD)", "k", 50, 10, 100)
                 inputs_m1['h'] = render_dist_input("Espesor h (ft)", "h", 100, 50, 150)
-                inputs_m1['Pr'] = render_dist_input("Presión Yac. Pr (psi)", "pr", 3000, 2500, 3500)
-                inputs_m1['Pwf'] = render_dist_input("Presión Fondo Pwf (psi)", "pwf", 2000, 1500, 2500)
                 inputs_m1['mu'] = render_dist_input("Viscosidad (cp)", "mu", 1.5, 1.0, 2.0)
                 inputs_m1['Bo'] = render_dist_input("Factor Vol. Bo", "bo", 1.2, 1.1, 1.3)
                 inputs_m1['S'] = render_dist_input("Daño (Skin)", "s", 0, -2, 5)
@@ -168,15 +198,21 @@ def main():
                 rw = st.number_input("Radio del Pozo rw (ft)", value=0.328)
 
             elif fluid_type == "Aceite" and model_ipr == "Vogel (Saturado)":
+                # Vogel necesita una Pr de referencia para calcular el radio adimensional, 
+                # pero la incertidumbre la maneja el Delta P.
+                st.info("Para Vogel, ingrese la Presión Estática (Pr) como referencia y caracterice el Drawdown.")
+                pr_ref = st.number_input("Presión Yacimiento Referencia (psi)", value=3000.0)
+                inputs_m1['delta_p'] = render_dist_input("Drawdown (Pr - Pwf) [psi]", "dp_v", 500, 100, 1000)
                 inputs_m1['qmax'] = render_dist_input("Qmax (AOF) bbl/d", "qmax", 5000, 3000, 8000)
-                inputs_m1['Pr'] = render_dist_input("Presión Yac. Pr (psi)", "pr_v", 3000, 2500, 3500)
-                inputs_m1['Pwf'] = render_dist_input("Presión Fondo Pwf (psi)", "pwf_v", 2000, 1500, 2500)
+                inputs_m1['Pr_ref'] = {'dist': 'Determinístico', 'params': {'value': pr_ref}} # Wrapper simple
             
             elif fluid_type == "Gas":
+                st.info("Para Gas, ingrese la Presión Estática (Pr) como referencia y caracterice el Drawdown.")
+                pr_ref = st.number_input("Presión Yacimiento Referencia (psi)", value=3000.0)
+                inputs_m1['delta_p'] = render_dist_input("Drawdown (Pr - Pwf) [psi]", "dp_g", 500, 100, 1000)
                 inputs_m1['C'] = render_dist_input("Coeficiente C", "c_gas", 0.1, 0.01, 0.5)
-                inputs_m1['n'] = render_dist_input("Exponente de Turbulencia n", "n_gas", 0.8, 0.5, 1.0)
-                inputs_m1['Pr'] = render_dist_input("Presión Yac. Pr (psi)", "pr_g", 3000, 2500, 3500)
-                inputs_m1['Pwf'] = render_dist_input("Presión Fondo Pwf (psi)", "pwf_g", 1500, 1000, 2000)
+                inputs_m1['n'] = render_dist_input("Exponente Turbulencia n", "n_gas", 0.8, 0.5, 1.0)
+                inputs_m1['Pr_ref'] = {'dist': 'Determinístico', 'params': {'value': pr_ref}}
 
             btn_calc_m1 = st.button("Calcular Producción Inicial ($q_i$)", key="btn_m1")
 
@@ -185,16 +221,18 @@ def main():
                 # 1. Generar muestras
                 samples = {k: generate_samples(v['dist'], v['params'], n_iters) for k, v in inputs_m1.items()}
                 
-                # 2. Calcular Qi
+                # 2. Calcular Qi usando las funciones actualizadas
                 if fluid_type == "Aceite" and model_ipr == "Darcy (Flujo Radial)":
-                    qi_result = ipr_oil_darcy(samples['k'], samples['h'], samples['Pr'], samples['Pwf'], 
+                    qi_result = ipr_oil_darcy(samples['k'], samples['h'], samples['delta_p'], 
                                              samples['mu'], samples['Bo'], re, rw, samples['S'])
                     unit = "bbl/d"
+                    
                 elif fluid_type == "Aceite" and model_ipr == "Vogel (Saturado)":
-                    qi_result = ipr_oil_vogel(samples['qmax'], samples['Pr'], samples['Pwf'])
+                    qi_result = ipr_oil_vogel(samples['qmax'], samples['Pr_ref'], samples['delta_p'])
                     unit = "bbl/d"
+                    
                 elif fluid_type == "Gas":
-                    qi_result = ipr_gas_backpressure(samples['C'], samples['Pr'], samples['Pwf'], samples['n'])
+                    qi_result = ipr_gas_backpressure(samples['C'], samples['Pr_ref'], samples['delta_p'], samples['n'])
                     unit = "MMPCD"
 
                 # 3. Guardar en Session State
@@ -234,7 +272,6 @@ def main():
             
             use_m1 = False
             if has_m1_data:
-                # CORREGIDO: Emoji entre comillas
                 st.success(f"✅ Datos del Módulo I disponibles ({st.session_state['qi_unit']})")
                 use_m1 = st.checkbox("Usar Probabilidad Calculada en Módulo I", value=True)
                 
